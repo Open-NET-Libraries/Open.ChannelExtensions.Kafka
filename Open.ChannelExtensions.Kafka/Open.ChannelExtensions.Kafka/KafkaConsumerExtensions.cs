@@ -98,16 +98,14 @@ public static class KafkaConsumerExtensions
 		CancellationToken cancellationToken = default)
 		=> consumer
 			.ToChannelReader(bufferSize, true, logger, cancellationToken)
-			.ReadAllAsync(cancellationToken);
+			.ReadAllAsync(CancellationToken.None); // We must allow the channel to drain.
 
 	/// <inheritdoc cref="ToAsyncEnumerable{TKey, TValue}(IConsumer{TKey, TValue}, int, ILogger?, CancellationToken)"/>/>
 	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ToAsyncEnumerable<TKey, TValue>(
 		this IConsumer<TKey, TValue> consumer,
 		int bufferSize,
 		CancellationToken cancellationToken = default)
-		=> consumer
-			.ToChannelReader(bufferSize, true, null, cancellationToken)
-			.ReadAllAsync(cancellationToken);
+		=> consumer.ToAsyncEnumerable(bufferSize, null, cancellationToken);
 
 	/// <summary>
 	/// Consumes messages from Kafka until the cancellation token is cancelled.

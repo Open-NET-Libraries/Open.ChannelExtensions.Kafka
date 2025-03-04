@@ -195,4 +195,14 @@ public static class KafkaConsumerExtensions
 			goto tryGetNext;
 		}
 	}
+
+	/// <inheritdoc cref="ConsumeUntilCancelled{TKey, TValue}(Func{ConsumerBuilder{TKey, TValue}}, IEnumerable{string}, int, ILogger?, CancellationToken)"/>
+	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeUntilCancelled<TKey, TValue>(
+		this Func<ConsumerBuilder<TKey, TValue>> builderFactory,
+		string topic,
+		int bufferSize,
+		ILogger? logger,
+		CancellationToken cancellationToken)
+		=> builderFactory
+			.ConsumeUntilCancelled([topic], bufferSize, logger, cancellationToken);
 }

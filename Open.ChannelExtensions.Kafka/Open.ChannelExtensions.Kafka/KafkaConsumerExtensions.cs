@@ -1,4 +1,7 @@
-﻿namespace Open.ChannelExtensions.Kafka;
+﻿using System.Diagnostics;
+using System.Runtime.CompilerServices;
+
+namespace Open.ChannelExtensions.Kafka;
 
 public static class KafkaConsumerExtensions
 {
@@ -16,7 +19,10 @@ public static class KafkaConsumerExtensions
 	/// </remarks>
 	public static ChannelReader<ConsumeResult<TKey, TValue>> ToChannelReader<TKey, TValue>(
 		this IConsumer<TKey, TValue> consumer,
-		int capacity, bool singleReader, ILogger? logger, CancellationToken cancellationToken = default)
+		int capacity,
+		bool singleReader,
+		ILogger? logger,
+		CancellationToken cancellationToken = default)
 	{
 		var channel = Channel.CreateBounded<ConsumeResult<TKey, TValue>>(new BoundedChannelOptions(capacity)
 		{
@@ -24,33 +30,35 @@ public static class KafkaConsumerExtensions
 			SingleWriter = false
 		});
 
+		const string LogPrefix = "Kafka Consumer Channel Reader";
+
 		_ = Task.Run(async () =>
 		{
-			logger?.LogInformation("Kafka Channel Reader Consumer: Starting");
+			logger?.LogInformation($"{LogPrefix}: starting");
 			var writer = channel.Writer;
 			try
 			{
 				while (!cancellationToken.IsCancellationRequested)
 				{
 					var result = consumer.Consume(cancellationToken);
-					logger?.LogTrace("Kafka Channel Reader Consumer: Consumed Message");
+					logger?.LogTrace($"{LogPrefix}: consumed message");
 					await writer
 						.WriteAsync(result, cancellationToken)
 						.ConfigureAwait(false);
 				}
 
 				writer.Complete();
-				logger?.LogWarning("Kafka Channel Reader Consumer: Cancelled");
+				logger?.LogWarning($"{LogPrefix}:  cancelled");
 			}
 			catch (OperationCanceledException ocex)
 			{
 				writer.Complete();
-				logger?.LogError(ocex, "Kafka Channel Reader Consumer: Cancelled");
+				logger?.LogError(ocex, $"{LogPrefix}: cancelled");
 			}
 			catch (Exception ex)
 			{
 				writer.Complete(ex);
-				logger?.LogError("Kafka Channel Reader Consumer: Error");
+				logger?.LogError($"{LogPrefix}: error");
 			}
 		}, cancellationToken);
 
@@ -60,7 +68,9 @@ public static class KafkaConsumerExtensions
 	/// <inheritdoc cref="ToChannelReader{TKey, TValue}(IConsumer{TKey, TValue}, int, bool, ILogger?, CancellationToken)"/>
 	public static ChannelReader<ConsumeResult<TKey, TValue>> ToChannelReader<TKey, TValue>(
 		this IConsumer<TKey, TValue> consumer,
-		int capacity, ILogger? logger, CancellationToken cancellationToken = default)
+		int capacity,
+		ILogger? logger,
+		CancellationToken cancellationToken = default)
 		=> consumer.ToChannelReader(capacity, false, logger, cancellationToken);
 
 	/// <inheritdoc cref="ToChannelReader{TKey, TValue}(IConsumer{TKey, TValue}, int, bool, ILogger?, CancellationToken)"/>
@@ -83,19 +93,106 @@ public static class KafkaConsumerExtensions
 	/// </summary>
 	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ToAsyncEnumerable<TKey, TValue>(
 		this IConsumer<TKey, TValue> consumer,
-		int buffer,
+		int bufferSize,
 		ILogger? logger,
 		CancellationToken cancellationToken = default)
 		=> consumer
-			.ToChannelReader(buffer, true, logger, cancellationToken)
+			.ToChannelReader(bufferSize, true, logger, cancellationToken)
 			.ReadAllAsync(cancellationToken);
 
 	/// <inheritdoc cref="ToAsyncEnumerable{TKey, TValue}(IConsumer{TKey, TValue}, int, ILogger?, CancellationToken)"/>/>
 	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ToAsyncEnumerable<TKey, TValue>(
 		this IConsumer<TKey, TValue> consumer,
-		int buffer,
+		int bufferSize,
 		CancellationToken cancellationToken = default)
 		=> consumer
-			.ToChannelReader(buffer, true, null, cancellationToken)
+			.ToChannelReader(bufferSize, true, null, cancellationToken)
 			.ReadAllAsync(cancellationToken);
+
+	/// <summary>
+	/// Consumes messages from Kafka until the cancellation token is cancelled.
+	/// </summary>
+	/// <remarks>
+	/// Will attempt to restart the consumer after 30 seconds if starting or subcribing it fails.
+	/// Will attempt to restart the consumer after 5 seconds if a consumption error occurs.
+	/// </remarks>
+	public static async IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeUntilCancelled<TKey, TValue>(
+		this Func<ConsumerBuilder<TKey, TValue>> builderFactory,
+		IEnumerable<string> topics,
+		int bufferSize,
+		ILogger? logger,
+		[EnumeratorCancellation] CancellationToken cancellationToken)
+	{
+		const string LogPrefix = "Kafka Consumer";
+		Debug.Assert(builderFactory is not null);
+
+		logger?.LogInformation($"{LogPrefix}: starting");
+
+		while (!cancellationToken.IsCancellationRequested)
+		{
+			// Try and start the consumer.
+			IConsumer<TKey, TValue> consumer;
+			try
+			{
+				consumer = builderFactory().Build();
+			}
+			catch (Exception ex)
+			{
+				logger?.LogError(ex, $"{LogPrefix}: error when starting.");
+				await Task
+					.Delay(TimeSpan.FromSeconds(30), cancellationToken)
+					.ConfigureAwait(false);
+				continue;
+			}
+
+			// Consumer started, ensure disposal.
+			using var c = consumer;
+
+			// Try and subscribe.
+			try
+			{
+				c.Subscribe(topics);
+			}
+			catch (Exception ex)
+			{
+				logger?.LogError(ex, $"{LogPrefix}: error when subscribing.");
+				await Task
+					.Delay(TimeSpan.FromSeconds(30), cancellationToken)
+					.ConfigureAwait(false);
+				continue;
+			}
+
+			// Prepare the enumerator.
+			var e = c
+				.ToAsyncEnumerable(bufferSize, logger, cancellationToken)
+				.GetAsyncEnumerator(cancellationToken);
+
+			ConsumeResult<TKey, TValue> result;
+
+		tryGetNext:
+			try
+			{
+				bool ok = await e.MoveNextAsync().ConfigureAwait(false);
+				if(!ok)
+				{
+					// No more? A consumption error must have occured.
+					await Task
+						.Delay(TimeSpan.FromSeconds(5), cancellationToken)
+						.ConfigureAwait(false);
+
+					continue;
+				}
+
+				result = e.Current;
+			}
+			catch(OperationCanceledException)
+			{
+				logger?.LogWarning($"{LogPrefix}: cancelled");
+				yield break;
+			}
+
+			yield return result;
+			goto tryGetNext;
+		}
+	}
 }

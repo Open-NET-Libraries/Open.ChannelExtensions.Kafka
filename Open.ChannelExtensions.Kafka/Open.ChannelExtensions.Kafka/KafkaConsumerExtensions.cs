@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Diagnostics.Contracts;
 using System.Runtime.CompilerServices;
 
 namespace Open.ChannelExtensions.Kafka;
@@ -24,6 +25,10 @@ public static class KafkaConsumerExtensions
 		ILogger? logger,
 		CancellationToken cancellationToken = default)
 	{
+		if (consumer is null) throw new ArgumentNullException(nameof(consumer));
+		if (capacity < 1) throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be at least 1.");
+		Contract.EndContractBlock();
+
 		var channel = Channel.CreateBounded<ConsumeResult<TKey, TValue>>(new BoundedChannelOptions(capacity)
 		{
 			SingleReader = singleReader,
@@ -91,21 +96,61 @@ public static class KafkaConsumerExtensions
 	/// <summary>
 	/// Creates an channel-buffered Async-Enumerable from a Kafka Consumer.
 	/// </summary>
-	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ToAsyncEnumerable<TKey, TValue>(
+	/// <remarks>Not LINQ compatibile as</remarks>
+	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ToBufferedAsyncEnumerable<TKey, TValue>(
 		this IConsumer<TKey, TValue> consumer,
 		int bufferSize,
 		ILogger? logger,
 		CancellationToken cancellationToken = default)
-		=> consumer
-			.ToChannelReader(bufferSize, true, logger, cancellationToken)
-			.ReadAllAsync(CancellationToken.None); // We must allow the channel to drain.
+	{
+		if (bufferSize < 1)
+			throw new ArgumentOutOfRangeException(nameof(bufferSize), "Buffer size must be at least 0.");
+		Contract.EndContractBlock();
+
+		return bufferSize == 0
+			? consumer
+				.AsAsyncEnumerable(logger, cancellationToken)
+			: consumer
+				.ToChannelReader(bufferSize, true, logger, cancellationToken)
+				.ReadAllAsync(CancellationToken.None); // We must allow the channel to drain.
+	}
 
 	/// <inheritdoc cref="ToAsyncEnumerable{TKey, TValue}(IConsumer{TKey, TValue}, int, ILogger?, CancellationToken)"/>/>
-	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ToAsyncEnumerable<TKey, TValue>(
+	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ToBufferedAsyncEnumerable<TKey, TValue>(
 		this IConsumer<TKey, TValue> consumer,
 		int bufferSize,
 		CancellationToken cancellationToken = default)
-		=> consumer.ToAsyncEnumerable(bufferSize, null, cancellationToken);
+		=> consumer.ToBufferedAsyncEnumerable(bufferSize, null, cancellationToken);
+
+	/// <summary>
+	/// Creates Async-Enumerable from a Kafka Consumer.
+	/// </summary>
+	/// <remarks>No buffering allows this to be async LINQ compatible.</remarks>
+	public static async IAsyncEnumerable<ConsumeResult<TKey, TValue>> AsAsyncEnumerable<TKey, TValue>(
+		this IConsumer<TKey, TValue> consumer,
+		ILogger? logger,
+		[EnumeratorCancellation] CancellationToken cancellationToken = default)
+	{
+		while (!cancellationToken.IsCancellationRequested)
+		{
+			ConsumeResult<TKey, TValue> result;
+
+			try
+			{
+				// Since the consume method can block, we wrap it in task to allow the state machine to yield.
+				result = await Task
+					.Run(() => consumer.Consume(cancellationToken), cancellationToken)
+					.ConfigureAwait(false);
+			}
+			catch (OperationCanceledException)
+			{
+				logger?.LogWarning("Kafka Consumer: cancelled");
+				yield break;
+			}
+
+			yield return result;
+		}
+	}
 
 	/// <summary>
 	/// Consumes messages from Kafka until the cancellation token is cancelled.
@@ -117,7 +162,6 @@ public static class KafkaConsumerExtensions
 	public static async IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeUntilCancelled<TKey, TValue>(
 		this Func<ConsumerBuilder<TKey, TValue>> builderFactory,
 		IEnumerable<string> topics,
-		int bufferSize,
 		ILogger? logger,
 		[EnumeratorCancellation] CancellationToken cancellationToken)
 	{
@@ -165,7 +209,7 @@ public static class KafkaConsumerExtensions
 			// Prepare the enumerator.
 			// No awaiting yet, so no cancellation to worry about.
 			var e = c
-				.ToAsyncEnumerable(bufferSize, logger, cancellationToken)
+				.AsAsyncEnumerable(logger, cancellationToken)
 				.GetAsyncEnumerator(cancellationToken);
 
 			ConsumeResult<TKey, TValue> result;
@@ -177,9 +221,12 @@ public static class KafkaConsumerExtensions
 					.MoveNextAsync()
 					.ConfigureAwait(false);
 
-				if(!more)
+				if (!more)
 				{
-					// No more? A consumption error must have occured.
+					if(cancellationToken.IsCancellationRequested)
+						yield break;
+
+					// No more? A consumption error must have occured or the token was cancelled.
 					await Task
 						.Delay(TimeSpan.FromSeconds(5), cancellationToken)
 						.ConfigureAwait(false);
@@ -189,7 +236,7 @@ public static class KafkaConsumerExtensions
 
 				result = e.Current;
 			}
-			catch(OperationCanceledException)
+			catch (OperationCanceledException)
 			{
 				logger?.LogWarning($"{LogPrefix}: cancelled");
 				yield break;
@@ -204,9 +251,8 @@ public static class KafkaConsumerExtensions
 	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeUntilCancelled<TKey, TValue>(
 		this Func<ConsumerBuilder<TKey, TValue>> builderFactory,
 		string topic,
-		int bufferSize,
 		ILogger? logger,
 		CancellationToken cancellationToken)
 		=> builderFactory
-			.ConsumeUntilCancelled([topic], bufferSize, logger, cancellationToken);
+			.ConsumeUntilCancelled([topic], logger, cancellationToken);
 }

@@ -142,6 +142,7 @@ public static class KafkaConsumerExtensions
 				await Task
 					.Delay(TimeSpan.FromSeconds(30), cancellationToken)
 					.ConfigureAwait(false);
+
 				continue;
 			}
 
@@ -159,10 +160,12 @@ public static class KafkaConsumerExtensions
 				await Task
 					.Delay(TimeSpan.FromSeconds(30), cancellationToken)
 					.ConfigureAwait(false);
+
 				continue;
 			}
 
 			// Prepare the enumerator.
+			// No awaiting yet, so no cancellation to worry about.
 			var e = c
 				.ToAsyncEnumerable(bufferSize, logger, cancellationToken)
 				.GetAsyncEnumerator(cancellationToken);
@@ -172,8 +175,11 @@ public static class KafkaConsumerExtensions
 		tryGetNext:
 			try
 			{
-				bool ok = await e.MoveNextAsync().ConfigureAwait(false);
-				if(!ok)
+				bool more = await e
+					.MoveNextAsync()
+					.ConfigureAwait(false);
+
+				if(!more)
 				{
 					// No more? A consumption error must have occured.
 					await Task

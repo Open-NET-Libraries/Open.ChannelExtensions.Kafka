@@ -169,9 +169,27 @@ public static class KafkaConsumerExtensions
 		Debug.Assert(builderFactory is not null);
 
 		logger?.LogInformation($"{LogPrefix}: starting");
+		TimeSpan delay = TimeSpan.Zero;
 
 		while (!cancellationToken.IsCancellationRequested)
 		{
+			if (delay != TimeSpan.Zero)
+			{
+				try
+				{
+					await Task
+						.Delay(delay, cancellationToken)
+						.ConfigureAwait(false);
+				}
+				catch(OperationCanceledException)
+				{
+					yield break;
+				}
+			}
+
+			if (cancellationToken.IsCancellationRequested)
+				yield break;
+
 			// Try and start the consumer.
 			IConsumer<TKey, TValue> consumer;
 			try
@@ -181,15 +199,12 @@ public static class KafkaConsumerExtensions
 			catch (Exception ex)
 			{
 				logger?.LogError(ex, $"{LogPrefix}: error when starting.");
-				await Task
-					.Delay(TimeSpan.FromSeconds(30), cancellationToken)
-					.ConfigureAwait(false);
-
+				delay = TimeSpan.FromSeconds(30);
 				continue;
 			}
 
 			// Consumer started, ensure disposal.
-			using var c = consumer;
+			using var c = consumer; // If continue is called, the consumer will be disposed.
 
 			// Try and subscribe.
 			try
@@ -199,10 +214,7 @@ public static class KafkaConsumerExtensions
 			catch (Exception ex)
 			{
 				logger?.LogError(ex, $"{LogPrefix}: error when subscribing.");
-				await Task
-					.Delay(TimeSpan.FromSeconds(30), cancellationToken)
-					.ConfigureAwait(false);
-
+				delay = TimeSpan.FromSeconds(30);
 				continue;
 			}
 
@@ -223,14 +235,8 @@ public static class KafkaConsumerExtensions
 
 				if (!more)
 				{
-					if(cancellationToken.IsCancellationRequested)
-						yield break;
-
-					// No more? A consumption error must have occured or the token was cancelled.
-					await Task
-						.Delay(TimeSpan.FromSeconds(5), cancellationToken)
-						.ConfigureAwait(false);
-
+					// Cancelled? Or?
+					delay = TimeSpan.FromSeconds(30);
 					continue;
 				}
 
@@ -240,6 +246,12 @@ public static class KafkaConsumerExtensions
 			{
 				logger?.LogWarning($"{LogPrefix}: cancelled");
 				yield break;
+			}
+			catch(Exception ex)
+			{
+				logger?.LogError(ex, $"{LogPrefix}: error when consuming.");
+				delay = TimeSpan.FromSeconds(5);
+				continue;
 			}
 
 			yield return result;

@@ -4,6 +4,9 @@ using System.Runtime.CompilerServices;
 
 namespace Open.ChannelExtensions.Kafka;
 
+/// <summary>
+/// Extensions for consuming from Kafka.
+/// </summary>
 public static class KafkaConsumerExtensions
 {
 	/// <summary>
@@ -96,7 +99,7 @@ public static class KafkaConsumerExtensions
 	/// <summary>
 	/// Creates an channel-buffered Async-Enumerable from a Kafka Consumer.
 	/// </summary>
-	/// <remarks>Not LINQ compatibile as</remarks>
+	/// <remarks>Not LINQ compatibile as buffering may continue to read even when no more results are requested.</remarks>
 	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ToBufferedAsyncEnumerable<TKey, TValue>(
 		this IConsumer<TKey, TValue> consumer,
 		int bufferSize,
@@ -115,7 +118,7 @@ public static class KafkaConsumerExtensions
 				.ReadAllAsync(CancellationToken.None); // We must allow the channel to drain.
 	}
 
-	/// <inheritdoc cref="ToAsyncEnumerable{TKey, TValue}(IConsumer{TKey, TValue}, int, ILogger?, CancellationToken)"/>/>
+	/// <inheritdoc cref="ToBufferedAsyncEnumerable{TKey, TValue}(IConsumer{TKey, TValue}, int, ILogger?, CancellationToken)"/>
 	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ToBufferedAsyncEnumerable<TKey, TValue>(
 		this IConsumer<TKey, TValue> consumer,
 		int bufferSize,
@@ -259,7 +262,7 @@ public static class KafkaConsumerExtensions
 		}
 	}
 
-	/// <inheritdoc cref="ConsumeUntilCancelled{TKey, TValue}(Func{ConsumerBuilder{TKey, TValue}}, IEnumerable{string}, int, ILogger?, CancellationToken)"/>
+	/// <inheritdoc cref="ConsumeUntilCancelled{TKey, TValue}(Func{ConsumerBuilder{TKey, TValue}}, IEnumerable{string}, ILogger?, CancellationToken)"/>
 	public static IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeUntilCancelled<TKey, TValue>(
 		this Func<ConsumerBuilder<TKey, TValue>> builderFactory,
 		string topic,

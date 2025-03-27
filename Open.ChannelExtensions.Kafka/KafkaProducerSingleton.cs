@@ -8,6 +8,9 @@
 /// A delegate for creating new producer builders.
 /// Since the typical pattern for a builder is to only be used once.
 /// </param>
+/// <param name="logger">
+/// The logger to use for logging errors from Kafka..
+/// </param>
 /// <remarks>
 /// If the producer produces errors, it will be disposed and a new one will be created.
 /// Disposing of this instance will simply  dispose of the producer.
@@ -17,6 +20,9 @@ public sealed class KafkaProducerSingleton<TKey, TValue>(
 	ILogger<KafkaProducerSingleton<TKey, TValue>>? logger)
 	: IKafkaProducerProvider<TKey, TValue>, IDisposable
 {
+	/// <summary>
+	/// Creates a new instance of the producer singleton.
+	/// </summary>
 	public KafkaProducerSingleton(
 		ProducerConfig config,
 		ILogger<KafkaProducerSingleton<TKey, TValue>>? logger)
@@ -52,11 +58,20 @@ public sealed class KafkaProducerSingleton<TKey, TValue>(
 	/// </summary>
 	private readonly CancellationTokenSource _cts = new();
 
-	/* This is a rare case where we should actually
-	 * follow the dispose pattern as we are holding
-	 * onto a resource that needs to be disposed. */
+	/// <summary>
+	/// Finalizer to ensure the producer is disposed.
+	/// </summary>
+	/// <remarks>
+	/// This is a rare case where we should actually
+	///	follow the dispose pattern as we are holding
+	/// onto a resource that needs to be disposed.
+	/// </remarks>
 	~KafkaProducerSingleton() => Dispose(false);
 
+	/// <summary>
+	/// Disposes of the producer singleton.
+	/// </summary>
+	/// <remarks>Thread-safe: can be called multiple times but will only be disposed once.</remarks>
 	public void Dispose()
 	{
 		GC.SuppressFinalize(this);
@@ -228,6 +243,7 @@ public sealed class KafkaProducerSingleton<TKey, TValue>(
 		});
 	}
 
+	/// <exception cref="ObjectDisposedException">If this instance is already disposed.</exception>
 	/// <inheritdoc />
 	[SuppressMessage("Roslynator",
 		"RCS1229:Use async/await when necessary",
